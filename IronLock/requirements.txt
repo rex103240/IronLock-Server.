@@ -1,5 +1,5 @@
 Flask
-   2     gunicorn
-   3     psycopg2-binary
-   4     Flask-SQLAlchemy
-   5     python-dotenv
+gunicorn
+psycopg2-binary
+Flask-SQLAlchemy
+python-dotenv
