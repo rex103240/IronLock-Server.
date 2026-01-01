@@ -24,34 +24,37 @@ def verify_license():
     data = request.json
     key = data.get('license_key')
     hwid = data.get('hardware_id')
+    claimed_name = data.get('gym_name') # New: Client sends their name
     
     if not key or not hwid:
         return jsonify({"valid": False, "message": "Missing Data"}), 400
         
     license_obj = License.query.filter_by(key=key).first()
     
-    # 1. Check Existence
     if not license_obj:
         return jsonify({"valid": False, "message": "Invalid License Key"}), 401
     
-    # 2. Check Status
     if license_obj.status != 'active':
         return jsonify({"valid": False, "message": "License Suspended"}), 403
         
-    # 3. Check Expiry
     if license_obj.valid_until < datetime.utcnow().date():
         license_obj.status = 'expired'
         db.session.commit()
         return jsonify({"valid": False, "message": "License Expired"}), 403
         
-    # 4. Hardware Lock (Optional: Bind to first seen device)
+    # --- KEY BINDING LOGIC ---
+    # If key is unassigned, assign the provided gym name
+    if license_obj.gym_name is None:
+        if not claimed_name:
+            # Tell client "Key is valid, but we need a Gym Name to bind it"
+            return jsonify({"valid": True, "needs_registration": True})
+        license_obj.gym_name = claimed_name
+        db.session.commit()
+    
+    # Hardware Lock
     if license_obj.hardware_id is None:
         license_obj.hardware_id = hwid
         db.session.commit()
-    # elif license_obj.hardware_id != hwid:
-    #     # Strict mode: Reject if hardware ID doesn't match
-    #     # For now, we allow multiple devices per gym as per your request
-    #     pass
 
     # Log the check
     log = AccessLog(license_id=license_obj.id, ip_address=request.remote_addr, message="Validation Success")
@@ -67,14 +70,13 @@ def verify_license():
         "expires_in_days": days_left
     })
 
-# Admin Endpoint to Create Keys (Protected in Prod)
 @app.route('/api/admin/create_key', methods=['POST'])
 def create_key():
-    # In real life, protect this with an Admin Password check!
     data = request.json
+    # Allow gym_name to be missing for unassigned keys
     new_license = License(
         key=data['key'],
-        gym_name=data['gym_name'],
+        gym_name=data.get('gym_name'), 
         client_email=data.get('client_email'),
         valid_until=datetime.strptime(data['valid_until'], "%Y-%m-%d").date()
     )
