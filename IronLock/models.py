@@ -13,7 +13,7 @@ class License(db.Model):
     __tablename__ = 'licenses'
     id = db.Column(db.Integer, primary_key=True)
     key = db.Column(db.String(50), unique=True, nullable=False, index=True)
-    gym_name = db.Column(db.String(100), nullable=False)
+    gym_name = db.Column(db.String(100), nullable=True) # Initially NULL for unassigned keys
     client_email = db.Column(db.String(120))
     valid_until = db.Column(db.Date, nullable=False)
     status = db.Column(db.String(20), default='active') # active, suspended, expired
