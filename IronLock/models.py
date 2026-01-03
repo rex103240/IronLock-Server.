@@ -15,6 +15,9 @@ class License(db.Model):
     key = db.Column(db.String(50), unique=True, nullable=False, index=True)
     gym_name = db.Column(db.String(100), nullable=True) # Initially NULL for unassigned keys
     client_email = db.Column(db.String(120))
+    gym_address = db.Column(db.Text, nullable=True)
+    gym_phone = db.Column(db.String(50), nullable=True)
+    additional_info = db.Column(db.Text, nullable=True) # JSON or Text blob for hours/etc
     valid_until = db.Column(db.Date, nullable=False)
     status = db.Column(db.String(20), default='active') # active, suspended, expired
     hardware_id = db.Column(db.String(100), nullable=True) # Locks to first device

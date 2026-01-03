@@ -22,7 +22,17 @@ with app.app_context():
         db.create_all()
         # Only try to alter if we are on a real database (Postgres)
         if "postgresql" in app.config['SQLALCHEMY_DATABASE_URI']:
-            db.session.execute(text("ALTER TABLE licenses ALTER COLUMN gym_name DROP NOT NULL"))
+            # Auto-Migration for new fields
+            try:
+                db.session.execute(text("ALTER TABLE licenses ALTER COLUMN gym_name DROP NOT NULL"))
+            except: pass
+            
+            try:
+                db.session.execute(text("ALTER TABLE licenses ADD COLUMN gym_address TEXT"))
+                db.session.execute(text("ALTER TABLE licenses ADD COLUMN gym_phone VARCHAR(50)"))
+                db.session.execute(text("ALTER TABLE licenses ADD COLUMN additional_info TEXT"))
+            except: pass
+            
             db.session.commit()
     except Exception as e:
         db.session.rollback()
@@ -39,7 +49,14 @@ def verify_license():
         key = data.get('license_key')
         hwid = data.get('hardware_id')
         claimed_name = data.get('gym_name')
-        client_email = data.get('email')  # Capture email from request
+        client_email = data.get('email')
+        
+        # New Data Points
+        gym_address = data.get('gym_address')
+        gym_phone = data.get('gym_phone')
+        gym_open = data.get('gym_open_time')
+        gym_close = data.get('gym_close_time')
+        currency = data.get('currency')
         
         if not key or not hwid:
             return jsonify({"valid": False, "message": "Missing Data"}), 400
@@ -66,10 +83,20 @@ def verify_license():
         elif claimed_name and license_obj.gym_name != claimed_name:
              pass # Ignore mismatch, stick to original bound name
         
-        # 2. BIND EMAIL (Fix for missing user email)
+        # 2. BIND EMAIL & OTHER DETAILS (One-time set)
         if license_obj.client_email is None and client_email:
             license_obj.client_email = client_email
-            db.session.commit()
+        
+        if license_obj.gym_address is None and gym_address:
+            license_obj.gym_address = gym_address
+            
+        if license_obj.gym_phone is None and gym_phone:
+            license_obj.gym_phone = gym_phone
+            
+        if license_obj.additional_info is None and (gym_open or currency):
+            license_obj.additional_info = f"Open: {gym_open}-{gym_close} | Currency: {currency}"
+            
+        db.session.commit()
 
         # 3. BIND HWID (CRITICAL FIX)
         if license_obj.hardware_id is None:
