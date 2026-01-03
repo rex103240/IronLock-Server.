@@ -39,6 +39,7 @@ def verify_license():
         key = data.get('license_key')
         hwid = data.get('hardware_id')
         claimed_name = data.get('gym_name')
+        client_email = data.get('email')  # Capture email from request
         
         if not key or not hwid:
             return jsonify({"valid": False, "message": "Missing Data"}), 400
@@ -56,20 +57,21 @@ def verify_license():
             db.session.commit()
             return jsonify({"valid": False, "message": "License Expired"}), 403
             
+        # 1. BIND GYM NAME
         if license_obj.gym_name is None:
             if not claimed_name:
                 return jsonify({"valid": True, "needs_registration": True})
             license_obj.gym_name = claimed_name
             db.session.commit()
         elif claimed_name and license_obj.gym_name != claimed_name:
-             # If Gym Name is already set, but request tries to use a different one (and isn't just checking status)
-             # We can optionaly block this, or just ignore the new name and return the old one.
-             # Strict Mode:
-             pass 
-             # For now, we trust the DB's gym_name and ignore the mismatch in the claim, 
-             # effectively locking the name to the first one used.
+             pass # Ignore mismatch, stick to original bound name
         
-        # HWID CHECK (CRITICAL FIX)
+        # 2. BIND EMAIL (Fix for missing user email)
+        if license_obj.client_email is None and client_email:
+            license_obj.client_email = client_email
+            db.session.commit()
+
+        # 3. BIND HWID (CRITICAL FIX)
         if license_obj.hardware_id is None:
             license_obj.hardware_id = hwid
             db.session.commit()
