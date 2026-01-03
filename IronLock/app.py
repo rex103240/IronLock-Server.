@@ -61,10 +61,21 @@ def verify_license():
                 return jsonify({"valid": True, "needs_registration": True})
             license_obj.gym_name = claimed_name
             db.session.commit()
+        elif claimed_name and license_obj.gym_name != claimed_name:
+             # If Gym Name is already set, but request tries to use a different one (and isn't just checking status)
+             # We can optionaly block this, or just ignore the new name and return the old one.
+             # Strict Mode:
+             pass 
+             # For now, we trust the DB's gym_name and ignore the mismatch in the claim, 
+             # effectively locking the name to the first one used.
         
+        # HWID CHECK (CRITICAL FIX)
         if license_obj.hardware_id is None:
             license_obj.hardware_id = hwid
             db.session.commit()
+        elif license_obj.hardware_id != hwid:
+            # If bound to a different machine -> BLOCK
+            return jsonify({"valid": False, "message": "License used on another device (HWID Mismatch)"}), 403
 
         log = AccessLog(license_id=license_obj.id, ip_address=request.remote_addr, message="Validation Success")
         license_obj.last_check = datetime.utcnow()
