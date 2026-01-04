@@ -75,39 +75,39 @@ def verify_license():
             db.session.commit()
             return jsonify({"valid": False, "message": "License Expired"}), 403
             
-        # 1. BIND GYM NAME
-        if license_obj.gym_name is None:
+        # 1. BIND OR UPDATE GYM NAME
+        # If DB has no name, or an empty name, take the one from the client
+        if not license_obj.gym_name or license_obj.gym_name.strip() == "":
             if not claimed_name:
                 return jsonify({"valid": True, "needs_registration": True})
             license_obj.gym_name = claimed_name
             db.session.commit()
-        elif claimed_name and license_obj.gym_name != claimed_name:
-             pass # Ignore mismatch, stick to original bound name
         
-        # 2. BIND EMAIL & OTHER DETAILS (One-time set)
-        if license_obj.client_email is None and client_email:
+        # 2. BIND EMAIL & OTHER DETAILS (Update if missing or empty)
+        if not license_obj.client_email and client_email:
             license_obj.client_email = client_email
         
-        if license_obj.gym_address is None and gym_address:
+        if not license_obj.gym_address and gym_address:
             license_obj.gym_address = gym_address
             
-        if license_obj.gym_phone is None and gym_phone:
+        if not license_obj.gym_phone and gym_phone:
             license_obj.gym_phone = gym_phone
             
-        if license_obj.additional_info is None and (gym_open or currency):
+        if not license_obj.additional_info and (gym_open or currency):
             license_obj.additional_info = f"Open: {gym_open}-{gym_close} | Currency: {currency}"
             
         db.session.commit()
 
-        # 3. BIND HWID (CRITICAL FIX)
+        # 3. BIND HWID
         if license_obj.hardware_id is None:
             license_obj.hardware_id = hwid
             db.session.commit()
         elif license_obj.hardware_id != hwid:
-            # If bound to a different machine -> BLOCK
             return jsonify({"valid": False, "message": "License used on another device (HWID Mismatch)"}), 403
 
-        log = AccessLog(license_id=license_obj.id, ip_address=request.remote_addr, message="Validation Success")
+        # Log the actual action message from client (e.g. "Admin Login")
+        action_msg = data.get('message', "Validation Success")
+        log = AccessLog(license_id=license_obj.id, ip_address=request.remote_addr, message=action_msg)
         license_obj.last_check = datetime.utcnow()
         db.session.add(log)
         db.session.commit()
