@@ -1,11 +1,28 @@
 import os
+import base64
 from flask import Flask, jsonify, request
 from datetime import datetime
 from models import db, License, AccessLog
 from sqlalchemy import text
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import serialization
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev_key_only_change_in_prod')
+
+# Load Private Key for Signing
+PRIVATE_KEY = None
+try:
+    key_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'private_key.pem')
+    with open(key_path, "rb") as key_file:
+        PRIVATE_KEY = serialization.load_pem_private_key(
+            key_file.read(),
+            password=None
+        )
+    print("Security: Private Key Loaded Successfully.")
+except Exception as e:
+    print(f"Security Warning: Could not load private key: {e}")
 
 # Fix for Render/Neon: SQLAlchemy needs 'postgresql://' not 'postgres://'
 uri = os.environ.get("DATABASE_URL", "sqlite:///server.db")
@@ -112,10 +129,30 @@ def verify_license():
         db.session.add(log)
         db.session.commit()
         
+        # --- DIGITAL SIGNING ---
+        signature_b64 = None
+        expires_str = license_obj.valid_until.strftime("%Y-%m-%d")
+        
+        if PRIVATE_KEY:
+            # Data to sign: Key + HWID + Expiry (Ensures none of these can be tampered)
+            payload_str = f"{license_obj.key}|{hwid}|{expires_str}"
+            signature = PRIVATE_KEY.sign(
+                payload_str.encode('utf-8'),
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH
+                ),
+                hashes.SHA256()
+            )
+            signature_b64 = base64.b64encode(signature).decode('utf-8')
+        # -----------------------
+
         return jsonify({
             "valid": True,
             "gym_name": license_obj.gym_name,
-            "expires_in_days": (license_obj.valid_until - datetime.utcnow().date()).days
+            "expires_in_days": (license_obj.valid_until - datetime.utcnow().date()).days,
+            "signature": signature_b64,
+            "expiry_date": expires_str
         })
     except Exception as e:
         return jsonify({"valid": False, "message": f"System Error: {str(e)}"}), 500
