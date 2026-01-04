@@ -5,6 +5,11 @@ import secrets
 import string
 import os
 import sys
+from dotenv import load_dotenv
+from sqlalchemy import text
+
+# Load environment variables from .env file (if it exists)
+load_dotenv()
 
 # --- CONNECT TO YOUR EXISTING APP & DATABASE ---
 # Hack: Add IronLock subdirectory to path
@@ -27,6 +32,10 @@ st.markdown("""
     .stApp { background-color: #0E1117; color: white; }
     div[data-testid="stMetricValue"] { font-size: 2rem; color: #4ade80; }
     div[data-testid="stMetricLabel"] { font-size: 0.9rem; color: #94a3b8; }
+    .status-dot { height: 12px; width: 12px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+    .status-online { background-color: #4ade80; box-shadow: 0 0 8px #4ade80; }
+    .status-offline { background-color: #ef4444; }
+    .status-warning { background-color: #f59e0b; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -36,17 +45,31 @@ def generate_key(prefix="IRON"):
     parts = [''.join(secrets.choice(chars) for _ in range(4)) for _ in range(3)]
     return f"{prefix}-" + "-".join(parts)
 
+def get_status_html(last_check):
+    if not last_check:
+        return '<span class="status-dot status-offline"></span><span style="color:#ef4444">Never</span>'
+    
+    diff = datetime.utcnow() - last_check
+    if diff < timedelta(minutes=15):
+        return '<span class="status-dot status-online"></span><span style="color:#4ade80">Online</span>'
+    elif diff < timedelta(hours=24):
+        return '<span class="status-dot status-warning"></span><span style="color:#f59e0b">Away</span>'
+    else:
+        return '<span class="status-dot status-offline"></span><span style="color:#ef4444">Offline</span>'
+
 # --- SIDEBAR & NAVIGATION ---
 st.sidebar.title("🔐 IronLock Admin")
+st.sidebar.caption("v2.0 Professional Edition")
 st.sidebar.markdown("---")
+
 page = st.sidebar.radio("Navigation", [
     "📊 Dashboard", 
     "🔑 License Manager", 
-    "🏢 Gym Inspector", 
-    "📜 Live Logs"
+    "🚨 Gym Monitor",
+    "🛠️ Admin Tools"
 ])
 st.sidebar.markdown("---")
-st.sidebar.info(f"Server Time: {datetime.utcnow().strftime('%H:%M')}")
+st.sidebar.info(f"Server Time (UTC): {datetime.utcnow().strftime('%H:%M')}")
 
 # Use Flask Context to access DB
 with flask_app.app_context():
@@ -61,37 +84,39 @@ with flask_app.app_context():
         total = License.query.count()
         active = License.query.filter_by(status='active').count()
         
-        # Sales last 30 days (New licenses created)
+        # Sales last 30 days
         new_30d = License.query.filter(License.created_at >= datetime.utcnow() - timedelta(days=30)).count()
         
-        # Activity last 24h
-        pings_24h = AccessLog.query.filter(AccessLog.timestamp >= datetime.utcnow() - timedelta(hours=24)).count()
+        # Real-time Status Check
+        online_now = 0
+        gyms = License.query.filter(License.gym_name != None).all()
+        for g in gyms:
+            if g.last_check and (datetime.utcnow() - g.last_check) < timedelta(minutes=15):
+                online_now += 1
 
         # Display Metrics
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Licenses", total, delta=new_30d)
         col2.metric("Active Gyms", active)
-        col3.metric("24h Activity", pings_24h)
-        col4.metric("Server Status", "Online", delta_color="normal")
-
-        st.markdown("### 📈 Recent Validations")
-        logs = AccessLog.query.order_by(AccessLog.timestamp.desc()).limit(10).all()
+        col3.metric("🟢 Online Now", online_now)
+        col4.metric("Server Status", "Healthy", delta_color="normal")
         
-        if logs:
-            log_data = []
-            for l in logs:
-                # Find gym name for this log
-                lic = License.query.get(l.license_id)
-                gym_name = lic.gym_name if lic else "Unknown"
-                log_data.append({
-                    "Time": l.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-                    "Gym": gym_name,
-                    "IP Address": l.ip_address,
-                    "Result": l.message
-                })
-            st.dataframe(pd.DataFrame(log_data), use_container_width=True, hide_index=True)
+        st.markdown("### 📡 System Heartbeat")
+        if not gyms:
+            st.info("No gyms registered.")
         else:
-            st.info("No activity logs found.")
+            # Create a Status Grid
+            cols = st.columns(4)
+            for idx, gym in enumerate(gyms):
+                with cols[idx % 4]:
+                    status = get_status_html(gym.last_check)
+                    st.markdown(f"""
+                    <div style="background-color: #1e293b; padding: 15px; border-radius: 10px; margin-bottom: 10px; border: 1px solid #334155;">
+                        <div style="font-weight: bold; font-size: 1.1em;">{gym.gym_name or 'Unclaimed Key'}</div>
+                        <div style="font-size: 0.8em; color: #94a3b8; margin-bottom: 5px;">ID: {gym.key[:9]}...</div>
+                        <div>{status}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
     # ==========================================
     # 2. LICENSE MANAGER
@@ -99,49 +124,40 @@ with flask_app.app_context():
     elif "License Manager" in page:
         st.title("License Management")
 
-        # --- GENERATOR TAB ---
-        tab1, tab2 = st.tabs(["✨ Create Keys", "🛠️ Manage Existing"])
+        tab1, tab2 = st.tabs(["✨ Key Generator", "📂 License Database"])
         
         with tab1:
-            st.markdown("### Generate New Licenses")
+            st.subheader("Generate New Licenses")
             with st.form("gen_form"):
                 c1, c2 = st.columns(2)
                 count = c1.number_input("Quantity", min_value=1, value=1)
                 months = c2.number_input("Validity (Months)", min_value=1, value=12)
                 
-                # Pre-fill (Optional)
                 st.markdown("#### Optional Pre-binding")
                 client_email = st.text_input("Client Email (Leave empty for blank key)")
-                note = st.text_input("Internal Note (e.g. 'Paid via Stripe')")
                 
                 if st.form_submit_button("🚀 Generate Keys"):
                     expiry = datetime.utcnow().date() + timedelta(days=30*months)
                     new_keys = []
-                    
                     for _ in range(count):
                         k = generate_key()
                         lic = License(
-                            key=k,
-                            valid_until=expiry,
-                            client_email=client_email if client_email else None,
-                            status='active'
+                            key=k, 
+                            valid_until=expiry, 
+                            client_email=client_email if client_email else None
                         )
                         db.session.add(lic)
                         new_keys.append(k)
-                    
                     db.session.commit()
-                    st.success(f"Successfully generated {count} keys!")
+                    st.success(f"Generated {count} keys!")
                     st.code("\n".join(new_keys))
 
         with tab2:
-            st.markdown("### Existing Licenses")
-            
-            # Search Bar
-            search_q = st.text_input("Search by Key, Gym Name, or Email", placeholder="Type to search...")
-            
+            st.subheader("All Licenses")
+            search = st.text_input("Search...", placeholder="Key, Name, or Email")
             query = License.query
-            if search_q:
-                term = f"%{search_q}%"
+            if search:
+                term = f"%{search}%"
                 query = query.filter(
                     (License.key.ilike(term)) | 
                     (License.gym_name.ilike(term)) | 
@@ -149,104 +165,62 @@ with flask_app.app_context():
                 )
             
             licenses = query.order_by(License.created_at.desc()).all()
-            
-            # Display Table
             if licenses:
                 df = pd.DataFrame([{
-                    "ID": l.id,
                     "Key": l.key,
-                    "Gym Name": l.gym_name or "Unclaimed",
-                    "Email": l.client_email or "-",
+                    "Gym Name": l.gym_name,
+                    "Email": l.client_email,
                     "Status": l.status,
-                    "Valid Until": l.valid_until,
-                    "HWID Locked": "✅" if l.hardware_id else "❌"
+                    "Expires": l.valid_until,
+                    "Last Check": l.last_check
                 } for l in licenses])
-                
-                st.dataframe(df, use_container_width=True, hide_index=True)
-                
-                st.markdown("---")
-                st.markdown("#### ⚡ Quick Actions")
-                
-                c1, c2, c3 = st.columns([2, 1, 1])
-                target_key = c1.selectbox("Select Key to Modify", [l.key for l in licenses])
-                target = License.query.filter_by(key=target_key).first()
-                
-                if target:
-                    c2.info(f"Status: {target.status}")
-                    
-                    action = c3.radio("Action", ["Activate", "Suspend (Lock Out)", "Extend +30 Days", "Reset HWID (Allow New PC)"])
-                    
-                    if st.button("Apply Change"):
-                        if "Activate" in action:
-                            target.status = 'active'
-                            st.success("License Activated.")
-                        elif "Suspend" in action:
-                            target.status = 'suspended'
-                            st.warning("License Suspended. User will be locked out.")
-                        elif "Extend" in action:
-                            target.valid_until += timedelta(days=30)
-                            st.success("Validity extended by 30 days.")
-                        elif "Reset HWID" in action:
-                            target.hardware_id = None
-                            st.info("Hardware ID cleared. Key can be used on a new machine.")
-                        
-                        db.session.commit()
-                        st.rerun()
+                st.dataframe(df, use_container_width=True)
 
     # ==========================================
-    # 3. GYM INSPECTOR
+    # 3. GYM MONITOR (Remote Logs)
     # ==========================================
-    elif "Gym Inspector" in page:
-        st.title("Gym Inspector")
-        st.markdown("View detailed info about registered facilities.")
+    elif "Gym Monitor" in page:
+        st.title("🚨 Gym Monitor & Logs")
         
-        gyms = License.query.filter(License.gym_name != None).all()
+        tab1, tab2 = st.tabs(["📜 Live Access Logs", "⚠️ Error Reports"])
         
-        if not gyms:
-            st.warning("No gyms have registered yet.")
-        else:
-            selected_gym = st.selectbox("Select Gym", [f"{g.gym_name} ({g.key})" for g in gyms])
-            if selected_gym:
-                # Extract key from string
-                key = selected_gym.split('(')[1].strip(')')
-                gym = License.query.filter_by(key=key).first()
-                
-                if gym:
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.subheader(gym.gym_name)
-                        st.write(f"**Email:** {gym.client_email}")
-                        st.write(f"**Phone:** {gym.gym_phone or 'N/A'}")
-                        st.write(f"**Address:** {gym.gym_address or 'N/A'}")
-                    
-                    with c2:
-                        st.metric("Status", gym.status.upper())
-                        st.write(f"**Valid Until:** {gym.valid_until}")
-                        st.write(f"**Last Seen:** {gym.last_check.strftime('%Y-%m-%d %H:%M') if gym.last_check else 'Never'}")
-                        if gym.additional_info:
-                            st.info(f"Extra Info: {gym.additional_info}")
+        with tab1:
+            if st.button("Refresh Logs"): st.rerun()
+            logs = AccessLog.query.order_by(AccessLog.timestamp.desc()).limit(50).all()
+            data = []
+            for l in logs:
+                lic = License.query.get(l.license_id)
+                data.append({
+                    "Time": l.timestamp,
+                    "Gym": lic.gym_name if lic else "Unknown",
+                    "IP": l.ip_address,
+                    "Event": l.message
+                })
+            st.dataframe(pd.DataFrame(data), use_container_width=True)
+            
+        with tab2:
+            st.info("Remote Error Logging feature coming in v2.1. Currently viewing system warnings.")
+            # Placeholder for future "ErrorLog" table
+            st.warning("No critical errors reported by client terminals in the last 24h.")
 
     # ==========================================
-    # 4. LIVE LOGS
+    # 4. ADMIN TOOLS (SQL Console)
     # ==========================================
-    elif "Live Logs" in page:
-        st.title("Audit Trail")
-        st.markdown("Real-time stream of server requests.")
+    elif "Admin Tools" in page:
+        st.title("🛠️ Developer Tools")
+        st.warning("⚠️ DANGER ZONE: These actions directly affect the production database.")
         
-        if st.button("Refresh Logs"):
-            st.rerun()
-            
-        logs = AccessLog.query.order_by(AccessLog.timestamp.desc()).limit(100).all()
-        
-        data = []
-        for l in logs:
-            lic = License.query.get(l.license_id)
-            name = lic.gym_name if lic else "Unknown"
-            data.append({
-                "Timestamp": l.timestamp,
-                "Gym": name,
-                "IP": l.ip_address,
-                "Event": l.message
-            })
-            
-        st.dataframe(pd.DataFrame(data), use_container_width=True)
+        with st.expander("🔌 Direct SQL Console"):
+            query = st.text_area("SQL Query", placeholder="SELECT * FROM licenses LIMIT 5;")
+            if st.button("Execute SQL"):
+                try:
+                    result = db.session.execute(text(query))
+                    db.session.commit()
+                    
+                    if result.returns_rows:
+                        df = pd.DataFrame(result.fetchall(), columns=result.keys())
+                        st.dataframe(df)
+                    else:
+                        st.success("Query executed successfully (No rows returned).")
+                except Exception as e:
+                    st.error(f"SQL Error: {e}")

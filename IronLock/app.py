@@ -11,6 +11,7 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev_key_only_change_in_
 uri = os.environ.get("DATABASE_URL", "sqlite:///server.db")
 if uri and uri.startswith("postgres://"):
     uri = uri.replace("postgres://", "postgresql://", 1)
+
 app.config['SQLALCHEMY_DATABASE_URI'] = uri
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
